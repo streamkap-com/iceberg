@@ -154,6 +154,40 @@ public class TestSinkWriter {
   }
 
   @Test
+  public void testDynamicRouteRegex() {
+    IcebergSinkConfig config = mock(IcebergSinkConfig.class);
+    when(config.tables()).thenReturn(ImmutableList.of(TABLE_IDENTIFIER.toString()));
+    when(config.tableConfig(any())).thenReturn(mock(TableSinkConfig.class));
+    when(config.dynamicTablesEnabled()).thenReturn(true);
+    when(config.tablesRouteField()).thenReturn("server\\.(.+)");
+    when(config.tablesRouteFieldIsRegex()).thenReturn(true);
+    when(config.tablesRouteFieldRegexReplacement()).thenReturn("db.$1");
+
+    Map<String, Object> value = ImmutableMap.of("data", "test");
+
+    List<IcebergWriterResult> writerResults = sinkWriterTestWithTopic(value, config, "server.tbl");
+    assertThat(writerResults).hasSize(1);
+    IcebergWriterResult writerResult = writerResults.get(0);
+    assertThat(writerResult.tableReference().identifier()).isEqualTo(TABLE_IDENTIFIER);
+  }
+
+  @Test
+  public void testDynamicRouteRegexNoMatch() {
+    IcebergSinkConfig config = mock(IcebergSinkConfig.class);
+    when(config.tables()).thenReturn(ImmutableList.of(TABLE_IDENTIFIER.toString()));
+    when(config.tableConfig(any())).thenReturn(mock(TableSinkConfig.class));
+    when(config.dynamicTablesEnabled()).thenReturn(true);
+    when(config.tablesRouteField()).thenReturn("server\\.(.+)");
+    when(config.tablesRouteFieldIsRegex()).thenReturn(true);
+    when(config.tablesRouteFieldRegexReplacement()).thenReturn("db.$1");
+
+    Map<String, Object> value = ImmutableMap.of("data", "test");
+
+    List<IcebergWriterResult> writerResults = sinkWriterTestWithTopic(value, config, "other.topic");
+    assertThat(writerResults).hasSize(0);
+  }
+
+  @Test
   public void testDynamicNoRoute() {
     IcebergSinkConfig config = mock(IcebergSinkConfig.class);
     when(config.tables()).thenReturn(ImmutableList.of(TABLE_IDENTIFIER.toString()));
@@ -169,6 +203,11 @@ public class TestSinkWriter {
 
   private List<IcebergWriterResult> sinkWriterTest(
       Map<String, Object> value, IcebergSinkConfig config) {
+    return sinkWriterTestWithTopic(value, config, "topic");
+  }
+
+  private List<IcebergWriterResult> sinkWriterTestWithTopic(
+      Map<String, Object> value, IcebergSinkConfig config, String topic) {
     IcebergWriterResult writeResult =
         new IcebergWriterResult(
             TableIdentifier.parse(TABLE_NAME),
@@ -187,7 +226,7 @@ public class TestSinkWriter {
     Instant now = Instant.now().truncatedTo(ChronoUnit.MILLIS);
     SinkRecord rec =
         new SinkRecord(
-            "topic",
+            topic,
             1,
             null,
             "key",
@@ -200,7 +239,7 @@ public class TestSinkWriter {
 
     SinkWriterResult result = sinkWriter.completeWrite();
 
-    Offset offset = result.sourceOffsets().get(new TopicPartition("topic", 1));
+    Offset offset = result.sourceOffsets().get(new TopicPartition(topic, 1));
     assertThat(offset).isNotNull();
     assertThat(offset.offset()).isEqualTo(101L); // should be 1 more than current offset
     assertThat(offset.timestamp()).isEqualTo(now.atOffset(ZoneOffset.UTC));

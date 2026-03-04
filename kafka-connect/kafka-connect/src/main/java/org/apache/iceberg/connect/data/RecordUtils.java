@@ -97,6 +97,14 @@ class RecordUtils {
 
   public static TaskWriter<Record> createTableWriter(
       Table table, TableReference tableReference, IcebergSinkConfig config) {
+    return createTableWriter(table, tableReference, config, null);
+  }
+
+  public static TaskWriter<Record> createTableWriter(
+      Table table,
+      TableReference tableReference,
+      IcebergSinkConfig config,
+      List<String> keyFieldNames) {
     Map<String, String> tableProps = Maps.newHashMap(table.properties());
     tableProps.putAll(config.writeProps());
 
@@ -113,21 +121,40 @@ class RecordUtils {
 
     Set<Integer> identifierFieldIds = table.schema().identifierFieldIds();
 
-    // override the identifier fields if the config is set
-    List<String> idCols = config.tableConfig(tableReference.identifier().name()).idColumns();
-    if (!idCols.isEmpty()) {
-      identifierFieldIds =
-          idCols.stream()
-              .map(
-                  colName -> {
-                    NestedField field = table.schema().findField(colName);
-                    if (field == null) {
-                      throw new IllegalArgumentException("ID column not found: " + colName);
-                    }
-                    return field.fieldId();
-                  })
+    // Priority: key fields from record > config id-columns > table identifier fields
+    if (keyFieldNames != null && !keyFieldNames.isEmpty()) {
+      Set<Integer> keyFieldIds =
+          keyFieldNames.stream()
+              .map(colName -> table.schema().findField(colName))
+              .filter(field -> field != null)
+              .map(NestedField::fieldId)
               .collect(Collectors.toSet());
+      if (!keyFieldIds.isEmpty()) {
+        identifierFieldIds = keyFieldIds;
+      }
     }
+
+    if (identifierFieldIds == null || identifierFieldIds.isEmpty()) {
+      // fall back to config id-columns
+      List<String> idCols = config.tableConfig(tableReference.identifier().name()).idColumns();
+      if (!idCols.isEmpty()) {
+        identifierFieldIds =
+            idCols.stream()
+                .map(
+                    colName -> {
+                      NestedField field = table.schema().findField(colName);
+                      if (field == null) {
+                        throw new IllegalArgumentException("ID column not found: " + colName);
+                      }
+                      return field.fieldId();
+                    })
+                .collect(Collectors.toSet());
+      }
+    }
+
+    String cdcField = config.tablesCdcField();
+    boolean upsertMode = config.upsertModeEnabled();
+    boolean isDeltaMode = cdcField != null || upsertMode;
 
     FileWriterFactory<Record> writerFactory;
     if (identifierFieldIds == null || identifierFieldIds.isEmpty()) {
@@ -138,16 +165,21 @@ class RecordUtils {
               .writerProperties(tableProps)
               .build();
     } else {
-      writerFactory =
+      GenericFileWriterFactory.Builder builder =
           new GenericFileWriterFactory.Builder(table)
               .dataSchema(table.schema())
               .dataFileFormat(format)
               .equalityFieldIds(Ints.toArray(identifierFieldIds))
-              .equalityDeleteRowSchema(
-                  TypeUtil.select(table.schema(), Sets.newHashSet(identifierFieldIds)))
               .deleteFileFormat(format)
-              .writerProperties(tableProps)
-              .build();
+              .writerProperties(tableProps);
+      if (isDeltaMode) {
+        // Delta writers pass the full row to delete(), so the eq delete schema must match
+        builder.equalityDeleteRowSchema(table.schema());
+      } else {
+        builder.equalityDeleteRowSchema(
+            TypeUtil.select(table.schema(), Sets.newHashSet(identifierFieldIds)));
+      }
+      writerFactory = builder.build();
     }
 
     // (partition ID + task ID + operation ID) must be unique
@@ -159,7 +191,34 @@ class RecordUtils {
             .build();
 
     TaskWriter<Record> writer;
-    if (table.spec().isUnpartitioned()) {
+    if (isDeltaMode) {
+      // Delta writers for CDC/upsert mode — produces equality delete files
+      if (table.spec().isUnpartitioned()) {
+        writer =
+            new UnpartitionedDeltaWriter(
+                table.spec(),
+                format,
+                writerFactory,
+                fileFactory,
+                table.io(),
+                targetFileSize,
+                table.schema(),
+                identifierFieldIds,
+                upsertMode);
+      } else {
+        writer =
+            new PartitionedDeltaWriter(
+                table.spec(),
+                format,
+                writerFactory,
+                fileFactory,
+                table.io(),
+                targetFileSize,
+                table.schema(),
+                identifierFieldIds,
+                upsertMode);
+      }
+    } else if (table.spec().isUnpartitioned()) {
       writer =
           new UnpartitionedWriter<>(
               table.spec(), format, writerFactory, fileFactory, table.io(), targetFileSize);

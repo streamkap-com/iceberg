@@ -19,9 +19,11 @@
 package org.apache.iceberg.connect.data;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.catalog.Catalog;
@@ -37,6 +39,7 @@ import org.apache.iceberg.relocated.com.google.common.annotations.VisibleForTest
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types.StructType;
 import org.apache.iceberg.util.Tasks;
+import org.apache.kafka.connect.data.Field;
 import org.apache.kafka.connect.errors.DataException;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.slf4j.Logger;
@@ -77,7 +80,16 @@ class IcebergWriterFactory {
     }
     TableReference tableReference = TableReference.of(catalog.name(), identifier, tableUuid);
 
-    return new IcebergWriter(table, tableReference, config);
+    List<String> keyFieldNames = extractKeyFieldsFromRecord(sample);
+    return new IcebergWriter(table, tableReference, config, keyFieldNames);
+  }
+
+  @VisibleForTesting
+  static List<String> extractKeyFieldsFromRecord(SinkRecord record) {
+    if (record.keySchema() != null && record.keySchema().fields() != null) {
+      return record.keySchema().fields().stream().map(Field::name).collect(Collectors.toList());
+    }
+    return Collections.emptyList();
   }
 
   @VisibleForTesting

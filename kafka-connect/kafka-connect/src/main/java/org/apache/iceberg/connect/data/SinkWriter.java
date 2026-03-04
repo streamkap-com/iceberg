@@ -25,6 +25,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import org.apache.iceberg.catalog.Catalog;
@@ -39,6 +40,7 @@ public class SinkWriter {
   private final IcebergWriterFactory writerFactory;
   private final Map<String, RecordWriter> writers;
   private final Map<TopicPartition, Offset> sourceOffsets;
+  private Pattern routePattern;
 
   public SinkWriter(Catalog catalog, IcebergSinkConfig config) {
     this.config = config;
@@ -99,7 +101,7 @@ public class SinkWriter {
               });
 
     } else {
-      String routeValue = extractRouteValue(record.value(), routeField);
+      String routeValue = extractRouteValue(record, routeField);
       if (routeValue != null) {
         config
             .tables()
@@ -118,18 +120,29 @@ public class SinkWriter {
     String routeField = config.tablesRouteField();
     Preconditions.checkNotNull(routeField, "Route field cannot be null with dynamic routing");
 
-    String routeValue = extractRouteValue(record.value(), routeField);
+    String routeValue = extractRouteValue(record, routeField);
     if (routeValue != null) {
       String tableName = routeValue.toLowerCase(Locale.ROOT);
       writerForTable(tableName, record, true).write(record);
     }
   }
 
-  private String extractRouteValue(Object recordValue, String routeField) {
-    if (recordValue == null) {
+  private String extractRouteValue(SinkRecord record, String routeField) {
+    if (config.tablesRouteFieldIsRegex()) {
+      if (routePattern == null) {
+        routePattern = Pattern.compile(routeField);
+      }
+      Matcher matcher = routePattern.matcher(record.topic());
+      if (matcher.matches()) {
+        return matcher.replaceAll(config.tablesRouteFieldRegexReplacement());
+      }
       return null;
     }
-    Object routeValue = RecordUtils.extractFromRecordValue(recordValue, routeField);
+
+    if (record.value() == null) {
+      return null;
+    }
+    Object routeValue = RecordUtils.extractFromRecordValue(record.value(), routeField);
     return routeValue == null ? null : routeValue.toString();
   }
 

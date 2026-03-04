@@ -68,6 +68,13 @@ public class IcebergSinkConfig extends AbstractConfig {
   private static final String TABLES_PROP = "iceberg.tables";
   private static final String TABLES_DYNAMIC_PROP = "iceberg.tables.dynamic-enabled";
   private static final String TABLES_ROUTE_FIELD_PROP = "iceberg.tables.route-field";
+  private static final String TABLES_ROUTE_FIELD_IS_REGEX_PROP =
+      "iceberg.tables.route-field-is-regex";
+  private static final String TABLES_ROUTE_FIELD_REGEX_REPLACEMENT_PROP =
+      "iceberg.tables.route-field.replacement";
+  private static final String TABLES_CDC_FIELD_PROP = "iceberg.tables.cdc-field";
+  private static final String TABLES_UPSERT_MODE_ENABLED_PROP =
+      "iceberg.tables.upsert-mode-enabled";
   private static final String TABLES_DEFAULT_COMMIT_BRANCH = "iceberg.tables.default-commit-branch";
   private static final String TABLES_DEFAULT_ID_COLUMNS = "iceberg.tables.default-id-columns";
   private static final String TABLES_DEFAULT_PARTITION_BY = "iceberg.tables.default-partition-by";
@@ -133,6 +140,30 @@ public class IcebergSinkConfig extends AbstractConfig {
         null,
         Importance.MEDIUM,
         "Source record field for routing records to tables");
+    configDef.define(
+        TABLES_ROUTE_FIELD_IS_REGEX_PROP,
+        ConfigDef.Type.BOOLEAN,
+        false,
+        Importance.MEDIUM,
+        "If true, the route field value is treated as a regex matched against the record topic");
+    configDef.define(
+        TABLES_ROUTE_FIELD_REGEX_REPLACEMENT_PROP,
+        ConfigDef.Type.STRING,
+        null,
+        Importance.MEDIUM,
+        "Replacement string used with the route field regex to produce the table name");
+    configDef.define(
+        TABLES_CDC_FIELD_PROP,
+        ConfigDef.Type.STRING,
+        null,
+        Importance.MEDIUM,
+        "Source record field containing the CDC operation type (e.g. I, U, D)");
+    configDef.define(
+        TABLES_UPSERT_MODE_ENABLED_PROP,
+        ConfigDef.Type.BOOLEAN,
+        false,
+        Importance.MEDIUM,
+        "Set to true to treat all records as upserts (UPDATE operations)");
     configDef.define(
         TABLES_DEFAULT_COMMIT_BRANCH,
         ConfigDef.Type.STRING,
@@ -282,6 +313,12 @@ public class IcebergSinkConfig extends AbstractConfig {
     } else {
       throw new ConfigException("Must specify table name(s)");
     }
+
+    if (tablesRouteFieldIsRegex()) {
+      checkState(
+          tablesRouteFieldRegexReplacement() != null,
+          "Must specify a replacement string when using regex route field");
+    }
   }
 
   private void checkState(boolean condition, String msg) {
@@ -337,6 +374,22 @@ public class IcebergSinkConfig extends AbstractConfig {
 
   public String tablesRouteField() {
     return getString(TABLES_ROUTE_FIELD_PROP);
+  }
+
+  public boolean tablesRouteFieldIsRegex() {
+    return getBoolean(TABLES_ROUTE_FIELD_IS_REGEX_PROP);
+  }
+
+  public String tablesRouteFieldRegexReplacement() {
+    return getString(TABLES_ROUTE_FIELD_REGEX_REPLACEMENT_PROP);
+  }
+
+  public String tablesCdcField() {
+    return getString(TABLES_CDC_FIELD_PROP);
+  }
+
+  public boolean upsertModeEnabled() {
+    return getBoolean(TABLES_UPSERT_MODE_ENABLED_PROP);
   }
 
   public String tablesDefaultCommitBranch() {

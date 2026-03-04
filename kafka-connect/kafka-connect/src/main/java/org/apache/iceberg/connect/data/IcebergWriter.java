@@ -37,21 +37,27 @@ class IcebergWriter implements RecordWriter {
   private final Table table;
   private final TableReference tableReference;
   private final IcebergSinkConfig config;
+  private final List<String> keyFieldNames;
   private final List<IcebergWriterResult> writerResults;
 
   private RecordConverter recordConverter;
   private TaskWriter<Record> writer;
 
-  IcebergWriter(Table table, TableReference tableReference, IcebergSinkConfig config) {
+  IcebergWriter(
+      Table table,
+      TableReference tableReference,
+      IcebergSinkConfig config,
+      List<String> keyFieldNames) {
     this.table = table;
     this.tableReference = tableReference;
     this.config = config;
+    this.keyFieldNames = keyFieldNames;
     this.writerResults = Lists.newArrayList();
     initNewWriter();
   }
 
   private void initNewWriter() {
-    this.writer = RecordUtils.createTableWriter(table, tableReference, config);
+    this.writer = RecordUtils.createTableWriter(table, tableReference, config, keyFieldNames);
     this.recordConverter = new RecordConverter(table, config);
   }
 
@@ -61,6 +67,15 @@ class IcebergWriter implements RecordWriter {
       // ignore tombstones...
       if (record.value() != null) {
         Record row = convertToRow(record);
+
+        String cdcField = config.tablesCdcField();
+        if (cdcField != null) {
+          Operation op = extractCdcOperation(record.value(), cdcField);
+          if (op != null) {
+            row = new RecordWrapper(row, op);
+          }
+        }
+
         writer.write(row);
       }
     } catch (Exception e) {
@@ -72,6 +87,32 @@ class IcebergWriter implements RecordWriter {
               record.kafkaPartition(),
               record.kafkaOffset()),
           e);
+    }
+  }
+
+  static Operation extractCdcOperation(Object recordValue, String cdcField) {
+    Object opValue = RecordUtils.extractFromRecordValue(recordValue, cdcField);
+    if (opValue == null) {
+      return null;
+    }
+
+    String opStr = opValue.toString().trim();
+    if (opStr.isEmpty()) {
+      return null;
+    }
+
+    char first = Character.toUpperCase(opStr.charAt(0));
+    switch (first) {
+      case 'I':
+      case 'C': // Debezium uses 'c' for create
+      case 'R': // Debezium uses 'r' for read/snapshot
+        return Operation.INSERT;
+      case 'U':
+        return Operation.UPDATE;
+      case 'D':
+        return Operation.DELETE;
+      default:
+        return null;
     }
   }
 

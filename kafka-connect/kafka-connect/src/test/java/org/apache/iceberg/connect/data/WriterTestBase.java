@@ -24,6 +24,7 @@ import static org.mockito.Mockito.when;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 import org.apache.iceberg.LocationProviders;
@@ -76,9 +77,18 @@ public class WriterTestBase {
 
   protected WriteResult writeTest(
       List<Record> rows, IcebergSinkConfig config, Class<?> expectedWriterClass) {
+    return writeTest(rows, config, expectedWriterClass, Collections.emptyList());
+  }
+
+  protected WriteResult writeTest(
+      List<Record> rows,
+      IcebergSinkConfig config,
+      Class<?> expectedWriterClass,
+      List<String> keyFieldNames) {
     TableReference tableReference =
         TableReference.of("test_catalog", TableIdentifier.of("name"), UUID.randomUUID());
-    try (TaskWriter<Record> writer = RecordUtils.createTableWriter(table, tableReference, config)) {
+    try (TaskWriter<Record> writer =
+        RecordUtils.createTableWriter(table, tableReference, config, keyFieldNames)) {
       assertThat(writer.getClass()).isEqualTo(expectedWriterClass);
 
       rows.forEach(

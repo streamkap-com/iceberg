@@ -49,6 +49,48 @@ public class TestIcebergSinkConfig {
   }
 
   @Test
+  public void testRegexRouteWithoutReplacement() {
+    Map<String, String> props =
+        ImmutableMap.<String, String>builder()
+            .put("topics", "source-topic")
+            .put("iceberg.catalog.type", "rest")
+            .put("iceberg.tables.dynamic-enabled", "true")
+            .put("iceberg.tables.route-field", ".*")
+            .put("iceberg.tables.route-field-is-regex", "true")
+            .build();
+    assertThatThrownBy(() -> new IcebergSinkConfig(props))
+        .isInstanceOf(ConfigException.class)
+        .hasMessage("Must specify a replacement string when using regex route field");
+  }
+
+  @Test
+  public void testCdcFieldConfig() {
+    Map<String, String> props =
+        ImmutableMap.<String, String>builder()
+            .put("iceberg.catalog.type", "rest")
+            .put("topics", "source-topic")
+            .put("iceberg.tables", "db.landing")
+            .put("iceberg.tables.cdc-field", "__op")
+            .build();
+    IcebergSinkConfig config = new IcebergSinkConfig(props);
+    assertThat(config.tablesCdcField()).isEqualTo("__op");
+    assertThat(config.upsertModeEnabled()).isFalse();
+  }
+
+  @Test
+  public void testUpsertModeConfig() {
+    Map<String, String> props =
+        ImmutableMap.<String, String>builder()
+            .put("iceberg.catalog.type", "rest")
+            .put("topics", "source-topic")
+            .put("iceberg.tables", "db.landing")
+            .put("iceberg.tables.upsert-mode-enabled", "true")
+            .build();
+    IcebergSinkConfig config = new IcebergSinkConfig(props);
+    assertThat(config.upsertModeEnabled()).isTrue();
+  }
+
+  @Test
   public void testGetDefault() {
     Map<String, String> props =
         ImmutableMap.of(
