@@ -154,7 +154,9 @@ class RecordUtils {
 
     String cdcField = config.tablesCdcField();
     boolean upsertMode = config.upsertModeEnabled();
-    boolean isDeltaMode = cdcField != null || upsertMode;
+    boolean hardDelete = config.hardDeleteEnabled();
+    String hardDeleteField = config.hardDeleteField();
+    boolean isDeltaMode = cdcField != null || upsertMode || hardDelete;
 
     FileWriterFactory<Record> writerFactory;
     if (identifierFieldIds == null || identifierFieldIds.isEmpty()) {
@@ -204,7 +206,9 @@ class RecordUtils {
                 targetFileSize,
                 table.schema(),
                 identifierFieldIds,
-                upsertMode);
+                upsertMode,
+                hardDelete,
+                hardDeleteField);
       } else {
         writer =
             new PartitionedDeltaWriter(
@@ -216,7 +220,9 @@ class RecordUtils {
                 targetFileSize,
                 table.schema(),
                 identifierFieldIds,
-                upsertMode);
+                upsertMode,
+                hardDelete,
+                hardDeleteField);
       }
     } else if (table.spec().isUnpartitioned()) {
       writer =

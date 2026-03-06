@@ -64,6 +64,35 @@ public class TestIcebergSinkConfig {
   }
 
   @Test
+  public void testHardDeleteConfig() {
+    Map<String, String> props =
+        ImmutableMap.<String, String>builder()
+            .put("iceberg.catalog.type", "rest")
+            .put("topics", "source-topic")
+            .put("iceberg.tables", "db.landing")
+            .put("iceberg.tables.hard-delete-enabled", "true")
+            .build();
+    IcebergSinkConfig config = new IcebergSinkConfig(props);
+    assertThat(config.hardDeleteEnabled()).isTrue();
+    assertThat(config.hardDeleteField()).isEqualTo("__deleted");
+  }
+
+  @Test
+  public void testHardDeleteCustomField() {
+    Map<String, String> props =
+        ImmutableMap.<String, String>builder()
+            .put("iceberg.catalog.type", "rest")
+            .put("topics", "source-topic")
+            .put("iceberg.tables", "db.landing")
+            .put("iceberg.tables.hard-delete-enabled", "true")
+            .put("iceberg.tables.hard-delete-field", "__removed")
+            .build();
+    IcebergSinkConfig config = new IcebergSinkConfig(props);
+    assertThat(config.hardDeleteEnabled()).isTrue();
+    assertThat(config.hardDeleteField()).isEqualTo("__removed");
+  }
+
+  @Test
   public void testCdcFieldConfig() {
     Map<String, String> props =
         ImmutableMap.<String, String>builder()

@@ -75,6 +75,9 @@ public class IcebergSinkConfig extends AbstractConfig {
   private static final String TABLES_CDC_FIELD_PROP = "iceberg.tables.cdc-field";
   private static final String TABLES_UPSERT_MODE_ENABLED_PROP =
       "iceberg.tables.upsert-mode-enabled";
+  private static final String TABLES_HARD_DELETE_ENABLED_PROP =
+      "iceberg.tables.hard-delete-enabled";
+  private static final String TABLES_HARD_DELETE_FIELD_PROP = "iceberg.tables.hard-delete-field";
   private static final String TABLES_DEFAULT_COMMIT_BRANCH = "iceberg.tables.default-commit-branch";
   private static final String TABLES_DEFAULT_ID_COLUMNS = "iceberg.tables.default-id-columns";
   private static final String TABLES_DEFAULT_PARTITION_BY = "iceberg.tables.default-partition-by";
@@ -164,6 +167,18 @@ public class IcebergSinkConfig extends AbstractConfig {
         false,
         Importance.MEDIUM,
         "Set to true to treat all records as upserts (UPDATE operations)");
+    configDef.define(
+        TABLES_HARD_DELETE_ENABLED_PROP,
+        ConfigDef.Type.BOOLEAN,
+        false,
+        Importance.MEDIUM,
+        "Set to true to treat records with the hard-delete field set to true as deletes");
+    configDef.define(
+        TABLES_HARD_DELETE_FIELD_PROP,
+        ConfigDef.Type.STRING,
+        "__deleted",
+        Importance.MEDIUM,
+        "Record field name that indicates a delete when its value is true");
     configDef.define(
         TABLES_DEFAULT_COMMIT_BRANCH,
         ConfigDef.Type.STRING,
@@ -390,6 +405,14 @@ public class IcebergSinkConfig extends AbstractConfig {
 
   public boolean upsertModeEnabled() {
     return getBoolean(TABLES_UPSERT_MODE_ENABLED_PROP);
+  }
+
+  public boolean hardDeleteEnabled() {
+    return getBoolean(TABLES_HARD_DELETE_ENABLED_PROP);
+  }
+
+  public String hardDeleteField() {
+    return getString(TABLES_HARD_DELETE_FIELD_PROP);
   }
 
   public String tablesDefaultCommitBranch() {

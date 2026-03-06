@@ -41,7 +41,9 @@ class UnpartitionedDeltaWriter extends BaseDeltaTaskWriter {
       long targetFileSize,
       Schema schema,
       Set<Integer> identifierFieldIds,
-      boolean upsertMode) {
+      boolean upsertMode,
+      boolean hardDeleteEnabled,
+      String hardDeleteField) {
     super(
         spec,
         format,
@@ -51,7 +53,9 @@ class UnpartitionedDeltaWriter extends BaseDeltaTaskWriter {
         targetFileSize,
         schema,
         identifierFieldIds,
-        upsertMode);
+        upsertMode,
+        hardDeleteEnabled,
+        hardDeleteField);
     this.writer = new RowDataDeltaWriter(null);
   }
 

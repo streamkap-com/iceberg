@@ -47,7 +47,9 @@ class PartitionedDeltaWriter extends BaseDeltaTaskWriter {
       long targetFileSize,
       Schema schema,
       Set<Integer> identifierFieldIds,
-      boolean upsertMode) {
+      boolean upsertMode,
+      boolean hardDeleteEnabled,
+      String hardDeleteField) {
     super(
         spec,
         format,
@@ -57,7 +59,9 @@ class PartitionedDeltaWriter extends BaseDeltaTaskWriter {
         targetFileSize,
         schema,
         identifierFieldIds,
-        upsertMode);
+        upsertMode,
+        hardDeleteEnabled,
+        hardDeleteField);
     this.writers = Maps.newHashMap();
     this.partitionKey = new PartitionKey(spec, schema);
     this.wrapper = new InternalRecordWrapper(schema.asStruct());

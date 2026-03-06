@@ -38,6 +38,8 @@ abstract class BaseDeltaTaskWriter extends BaseTaskWriter<Record> {
   private final Schema schema;
   private final Schema deleteSchema;
   private final boolean upsertMode;
+  private final boolean hardDeleteEnabled;
+  private final String hardDeleteField;
 
   BaseDeltaTaskWriter(
       PartitionSpec spec,
@@ -48,11 +50,15 @@ abstract class BaseDeltaTaskWriter extends BaseTaskWriter<Record> {
       long targetFileSize,
       Schema schema,
       Set<Integer> identifierFieldIds,
-      boolean upsertMode) {
+      boolean upsertMode,
+      boolean hardDeleteEnabled,
+      String hardDeleteField) {
     super(spec, format, writerFactory, fileFactory, io, targetFileSize);
     this.schema = schema;
     this.deleteSchema = TypeUtil.select(schema, Sets.newHashSet(identifierFieldIds));
     this.upsertMode = upsertMode;
+    this.hardDeleteEnabled = hardDeleteEnabled;
+    this.hardDeleteField = hardDeleteField;
   }
 
   protected abstract RowDataDeltaWriter route(Record row);
@@ -75,9 +81,15 @@ abstract class BaseDeltaTaskWriter extends BaseTaskWriter<Record> {
       op = wrapper.operation();
       row = wrapper.delegate();
     } else {
-      // Default: INSERT for normal mode, UPDATE for upsert mode
-      op = upsertMode ? Operation.UPDATE : Operation.INSERT;
       row = record;
+      if (hardDeleteEnabled && isHardDelete(row)) {
+        op = Operation.DELETE;
+      } else if (upsertMode || hardDeleteEnabled) {
+        // hard delete enabled implies upsert for non-deleted records (current-state semantics)
+        op = Operation.UPDATE;
+      } else {
+        op = Operation.INSERT;
+      }
     }
 
     RowDataDeltaWriter writer = route(row);
@@ -95,6 +107,19 @@ abstract class BaseDeltaTaskWriter extends BaseTaskWriter<Record> {
         break;
       default:
         throw new UnsupportedOperationException("Unknown operation: " + op);
+    }
+  }
+
+  private boolean isHardDelete(Record row) {
+    try {
+      Object value = row.getField(hardDeleteField);
+      if (value == null) {
+        return false;
+      }
+      return Boolean.parseBoolean(value.toString());
+    } catch (Exception e) {
+      // Field not present in schema — treat as not deleted
+      return false;
     }
   }
 
