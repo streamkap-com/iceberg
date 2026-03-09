@@ -54,6 +54,7 @@ import org.apache.iceberg.connect.events.Event;
 import org.apache.iceberg.connect.events.StartCommit;
 import org.apache.iceberg.connect.events.TableReference;
 import org.apache.iceberg.exceptions.NoSuchTableException;
+import org.apache.iceberg.connect.data.TableCompactor;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Streams;
 import org.apache.iceberg.relocated.com.google.common.util.concurrent.ThreadFactoryBuilder;
@@ -80,6 +81,9 @@ class Coordinator extends Channel {
   private final String snapshotOffsetsProp;
   private final ExecutorService exec;
   private final CommitState commitState;
+  private final TableCompactor compactor;
+  private final int compactionCommitThreshold;
+  private int commitsSinceCompaction;
   private volatile boolean terminated;
 
   Coordinator(
@@ -110,6 +114,19 @@ class Coordinator extends Channel {
                 .setNameFormat("iceberg-committer" + "-%d")
                 .build());
     this.commitState = new CommitState(config);
+
+    if (config.compactionEnabled()) {
+      this.compactor =
+          new TableCompactor(
+              config.compactionTargetFileSizeBytes(),
+              config.compactionMinSmallFiles(),
+              config.compactionMaxFilesPerRun());
+      this.compactionCommitThreshold = config.compactionCommitThreshold();
+    } else {
+      this.compactor = null;
+      this.compactionCommitThreshold = 0;
+    }
+    this.commitsSinceCompaction = 0;
   }
 
   void process() {
@@ -183,6 +200,37 @@ class Coordinator extends Channel {
         commitState.currentCommitId(),
         commitMap.size(),
         validThroughTs);
+
+    maybeCompact(commitMap);
+  }
+
+  private void maybeCompact(Map<TableReference, List<Envelope>> commitMap) {
+    if (compactor == null || terminated) {
+      return;
+    }
+
+    commitsSinceCompaction++;
+    if (commitsSinceCompaction < compactionCommitThreshold) {
+      return;
+    }
+
+    commitsSinceCompaction = 0;
+
+    for (TableReference tableRef : commitMap.keySet()) {
+      TableIdentifier tableIdentifier = tableRef.identifier();
+      try {
+        Table table = catalog.loadTable(tableIdentifier);
+        String branch = config.tableConfig(tableIdentifier.toString()).commitBranch();
+
+        LOG.info("Running compaction check for table {}", tableIdentifier);
+        TableCompactor.CompactionResult result = compactor.compact(table, branch);
+        if (result.hasChanges()) {
+          LOG.info("Compaction result for table {}: {}", tableIdentifier, result);
+        }
+      } catch (Exception e) {
+        LOG.warn("Compaction failed for table {}, will retry on next cycle", tableIdentifier, e);
+      }
+    }
   }
 
   private String offsetsToJson(Map<Integer, Long> offsets) {
