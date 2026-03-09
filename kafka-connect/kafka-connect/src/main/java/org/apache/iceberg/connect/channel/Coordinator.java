@@ -120,7 +120,9 @@ class Coordinator extends Channel {
           new TableCompactor(
               config.compactionTargetFileSizeBytes(),
               config.compactionMinSmallFiles(),
-              config.compactionMaxFilesPerRun());
+              config.compactionMaxFilesPerRun(),
+              config.compactionExpireSnapshots(),
+              config.compactionRetainLast());
       this.compactionCommitThreshold = config.compactionCommitThreshold();
     } else {
       this.compactor = null;

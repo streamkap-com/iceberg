@@ -176,6 +176,110 @@ public class TestTableCompactor {
   }
 
   @Test
+  public void testCompactPartitionedTable() throws IOException {
+    // Create a partitioned table
+    HadoopTables tables = new HadoopTables();
+    PartitionSpec partSpec = PartitionSpec.builderFor(SCHEMA).identity("data").build();
+    Table partTable =
+        tables.create(
+            SCHEMA,
+            partSpec,
+            ImmutableMap.of(),
+            tempDir.getAbsolutePath() + "/partitioned_table");
+
+    // Write files across multiple partitions — each batch writes to a different partition value
+    for (int batch = 0; batch < 6; batch++) {
+      String partValue = "part-" + (batch % 3); // 3 distinct partitions, 2 files each
+      List<Record> records = Lists.newArrayList();
+      for (int i = 0; i < 5; i++) {
+        Record record = GenericRecord.create(SCHEMA);
+        record.setField("id", (long) (batch * 5 + i));
+        record.setField("data", partValue);
+        record.setField("id2", (long) i);
+        records.add(record);
+      }
+      TableReference tableRef =
+          TableReference.of("test_catalog", TableIdentifier.of("part_table"), UUID.randomUUID());
+      try (TaskWriter<Record> writer =
+          RecordUtils.createTableWriter(partTable, tableRef, config)) {
+        for (Record record : records) {
+          writer.write(record);
+        }
+        WriteResult result = writer.complete();
+        org.apache.iceberg.AppendFiles append = partTable.newAppend();
+        for (DataFile dataFile : result.dataFiles()) {
+          append.appendFile(dataFile);
+        }
+        append.commit();
+      }
+    }
+
+    // Verify we have 6 files (2 per partition)
+    List<FileScanTask> filesBefore = Lists.newArrayList();
+    try (CloseableIterable<FileScanTask> tasks = partTable.newScan().planFiles()) {
+      tasks.forEach(filesBefore::add);
+    }
+    assertThat(filesBefore).hasSize(6);
+
+    // Compact — should merge 2 files into 1 for each of the 3 partitions
+    TableCompactor compactor = new TableCompactor(512 * 1024 * 1024, 2, 100);
+    TableCompactor.CompactionResult result = compactor.compact(partTable, null);
+
+    assertThat(result.hasChanges()).isTrue();
+    assertThat(result.filesRemoved()).isEqualTo(6);
+    assertThat(result.filesAdded()).isEqualTo(3); // one file per partition
+
+    // Verify all records preserved
+    int recordCount = 0;
+    try (CloseableIterable<Record> records = IcebergGenerics.read(partTable).build()) {
+      for (Record ignored : records) {
+        recordCount++;
+      }
+    }
+    assertThat(recordCount).isEqualTo(30);
+  }
+
+  @Test
+  public void testCompactWithSnapshotExpiration() throws IOException {
+    // Write 5 batches — creates 5 snapshots + 5 data files
+    for (int i = 0; i < 5; i++) {
+      writeRecords(i * 10, 10);
+    }
+
+    // Verify we have 5 snapshots
+    int snapshotsBefore = 0;
+    for (org.apache.iceberg.Snapshot ignored : table.snapshots()) {
+      snapshotsBefore++;
+    }
+    assertThat(snapshotsBefore).isEqualTo(5);
+
+    // Compact with expiration enabled, retain only last 1 snapshot
+    TableCompactor compactor = new TableCompactor(512 * 1024 * 1024, 2, 100, true, 1);
+    TableCompactor.CompactionResult result = compactor.compact(table, null);
+
+    assertThat(result.hasChanges()).isTrue();
+    assertThat(result.filesRemoved()).isEqualTo(5);
+    assertThat(result.filesAdded()).isEqualTo(1);
+    assertThat(result.snapshotsExpired()).isGreaterThan(0);
+
+    // After expiration, should have fewer snapshots
+    table.refresh();
+    int snapshotsAfter = 0;
+    for (org.apache.iceberg.Snapshot ignored : table.snapshots()) {
+      snapshotsAfter++;
+    }
+    assertThat(snapshotsAfter).isLessThan(snapshotsBefore);
+
+    // Verify data is still intact
+    int recordCount = countRecords();
+    assertThat(recordCount).isEqualTo(50);
+
+    // Verify old data files are cleaned up from disk
+    List<FileScanTask> filesAfter = scanFiles();
+    assertThat(filesAfter).hasSize(1);
+  }
+
+  @Test
   public void testFindSmallFiles() {
     // Write 3 small files
     writeRecords(0, 10);

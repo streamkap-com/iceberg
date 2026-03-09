@@ -127,6 +127,11 @@ public class IcebergSinkConfig extends AbstractConfig {
   private static final String TABLES_COMPACTION_COMMIT_THRESHOLD_PROP =
       "iceberg.tables.compaction.commit-threshold";
   private static final int TABLES_COMPACTION_COMMIT_THRESHOLD_DEFAULT = 5;
+  private static final String TABLES_COMPACTION_EXPIRE_SNAPSHOTS_PROP =
+      "iceberg.tables.compaction.expire-snapshots";
+  private static final String TABLES_COMPACTION_RETAIN_LAST_PROP =
+      "iceberg.tables.compaction.retain-last";
+  private static final int TABLES_COMPACTION_RETAIN_LAST_DEFAULT = 1;
 
   private static final String COORDINATOR_EXECUTOR_KEEP_ALIVE_TIMEOUT_MS =
       "iceberg.coordinator-executor-keep-alive-timeout-ms";
@@ -327,6 +332,18 @@ public class IcebergSinkConfig extends AbstractConfig {
         TABLES_COMPACTION_COMMIT_THRESHOLD_DEFAULT,
         Importance.LOW,
         "Number of Iceberg commits between compaction checks");
+    configDef.define(
+        TABLES_COMPACTION_EXPIRE_SNAPSHOTS_PROP,
+        ConfigDef.Type.BOOLEAN,
+        false,
+        Importance.MEDIUM,
+        "Set to true to expire old snapshots and delete unreferenced data files after compaction");
+    configDef.define(
+        TABLES_COMPACTION_RETAIN_LAST_PROP,
+        ConfigDef.Type.INT,
+        TABLES_COMPACTION_RETAIN_LAST_DEFAULT,
+        Importance.MEDIUM,
+        "Number of most recent snapshots to retain when expiring snapshots after compaction");
     return configDef;
   }
 
@@ -588,6 +605,14 @@ public class IcebergSinkConfig extends AbstractConfig {
 
   public int compactionCommitThreshold() {
     return getInt(TABLES_COMPACTION_COMMIT_THRESHOLD_PROP);
+  }
+
+  public boolean compactionExpireSnapshots() {
+    return getBoolean(TABLES_COMPACTION_EXPIRE_SNAPSHOTS_PROP);
+  }
+
+  public int compactionRetainLast() {
+    return getInt(TABLES_COMPACTION_RETAIN_LAST_PROP);
   }
 
   public JsonConverter jsonConverter() {

@@ -26,10 +26,11 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import org.apache.iceberg.DataFile;
+import org.apache.iceberg.ExpireSnapshots;
 import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.RewriteFiles;
-import org.apache.iceberg.StructLike;
+import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.data.GenericFileWriterFactory;
@@ -45,6 +46,7 @@ import org.apache.iceberg.io.TaskWriter;
 import org.apache.iceberg.io.UnpartitionedWriter;
 import org.apache.iceberg.io.WriteResult;
 import org.apache.iceberg.util.PartitionUtil;
+import org.apache.iceberg.util.StructLikeWrapper;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.util.PropertyUtil;
@@ -62,12 +64,25 @@ public class TableCompactor {
   private final long targetFileSizeBytes;
   private final int minSmallFiles;
   private final int maxFilesPerCompaction;
+  private final boolean expireAfterCompaction;
+  private final int retainLastSnapshots;
 
   public TableCompactor(
-      long targetFileSizeBytes, int minSmallFiles, int maxFilesPerCompaction) {
+      long targetFileSizeBytes,
+      int minSmallFiles,
+      int maxFilesPerCompaction,
+      boolean expireAfterCompaction,
+      int retainLastSnapshots) {
     this.targetFileSizeBytes = targetFileSizeBytes;
     this.minSmallFiles = minSmallFiles;
     this.maxFilesPerCompaction = maxFilesPerCompaction;
+    this.expireAfterCompaction = expireAfterCompaction;
+    this.retainLastSnapshots = retainLastSnapshots;
+  }
+
+  public TableCompactor(
+      long targetFileSizeBytes, int minSmallFiles, int maxFilesPerCompaction) {
+    this(targetFileSizeBytes, minSmallFiles, maxFilesPerCompaction, false, 1);
   }
 
   /**
@@ -103,15 +118,15 @@ public class TableCompactor {
         targetFileSizeBytes);
 
     // Group files by partition for correct rewriting
-    Map<StructLike, List<FileScanTask>> byPartition = groupByPartition(smallFiles);
+    Map<StructLikeWrapper, List<FileScanTask>> byPartition =
+        groupByPartition(table, smallFiles);
 
     List<DataFile> filesToDelete = new ArrayList<>();
     List<DataFile> filesToAdd = new ArrayList<>();
 
-    for (Map.Entry<StructLike, List<FileScanTask>> entry : byPartition.entrySet()) {
+    for (Map.Entry<StructLikeWrapper, List<FileScanTask>> entry : byPartition.entrySet()) {
       List<FileScanTask> partitionFiles = entry.getValue();
 
-      // Only compact if there are at least 2 files in this partition
       if (partitionFiles.size() < 2) {
         continue;
       }
@@ -151,7 +166,12 @@ public class TableCompactor {
         filesToDelete.size(),
         filesToAdd.size());
 
-    return new CompactionResult(filesToDelete.size(), filesToAdd.size());
+    int expiredSnapshots = 0;
+    if (expireAfterCompaction) {
+      expiredSnapshots = expireSnapshots(table);
+    }
+
+    return new CompactionResult(filesToDelete.size(), filesToAdd.size(), expiredSnapshots);
   }
 
   List<FileScanTask> findSmallFiles(Table table) {
@@ -168,10 +188,13 @@ public class TableCompactor {
     return smallFiles;
   }
 
-  private Map<StructLike, List<FileScanTask>> groupByPartition(List<FileScanTask> files) {
-    Map<StructLike, List<FileScanTask>> grouped = Maps.newHashMap();
+  private Map<StructLikeWrapper, List<FileScanTask>> groupByPartition(
+      Table table, List<FileScanTask> files) {
+    StructLikeWrapper template = StructLikeWrapper.forType(table.spec().partitionType());
+    Map<StructLikeWrapper, List<FileScanTask>> grouped = Maps.newHashMap();
     for (FileScanTask task : files) {
-      grouped.computeIfAbsent(task.file().partition(), k -> new ArrayList<>()).add(task);
+      StructLikeWrapper key = template.copyFor(task.file().partition());
+      grouped.computeIfAbsent(key, k -> new ArrayList<>()).add(task);
     }
     return grouped;
   }
@@ -244,6 +267,41 @@ public class TableCompactor {
     }
   }
 
+  /**
+   * Expire old snapshots, retaining the most recent ones. This physically deletes data files that
+   * are no longer referenced by any retained snapshot.
+   */
+  int expireSnapshots(Table table) {
+    Snapshot currentSnapshot = table.currentSnapshot();
+    if (currentSnapshot == null) {
+      return 0;
+    }
+
+    long expireTimestamp = System.currentTimeMillis();
+
+    ExpireSnapshots expire =
+        table
+            .expireSnapshots()
+            .expireOlderThan(expireTimestamp)
+            .retainLast(retainLastSnapshots);
+
+    List<Snapshot> expired = expire.apply();
+    if (expired.isEmpty()) {
+      LOG.debug("No snapshots to expire for table {}", table.name());
+      return 0;
+    }
+
+    expire.commit();
+
+    LOG.info(
+        "Expired {} snapshot(s) for table {}, retained last {}",
+        expired.size(),
+        table.name(),
+        retainLastSnapshots);
+
+    return expired.size();
+  }
+
   private CloseableIterable<Record> openFile(Table table, FileScanTask task) {
     InputFile input = table.io().newInputFile(task.file());
     Map<Integer, ?> partition =
@@ -261,14 +319,16 @@ public class TableCompactor {
   }
 
   public static class CompactionResult {
-    static final CompactionResult EMPTY = new CompactionResult(0, 0);
+    static final CompactionResult EMPTY = new CompactionResult(0, 0, 0);
 
     private final int filesRemoved;
     private final int filesAdded;
+    private final int snapshotsExpired;
 
-    CompactionResult(int filesRemoved, int filesAdded) {
+    CompactionResult(int filesRemoved, int filesAdded, int snapshotsExpired) {
       this.filesRemoved = filesRemoved;
       this.filesAdded = filesAdded;
+      this.snapshotsExpired = snapshotsExpired;
     }
 
     public int filesRemoved() {
@@ -279,6 +339,10 @@ public class TableCompactor {
       return filesAdded;
     }
 
+    public int snapshotsExpired() {
+      return snapshotsExpired;
+    }
+
     public boolean hasChanges() {
       return filesRemoved > 0;
     }
@@ -286,7 +350,11 @@ public class TableCompactor {
     @Override
     public String toString() {
       return String.format(
-          java.util.Locale.ROOT, "CompactionResult{removed=%d, added=%d}", filesRemoved, filesAdded);
+          java.util.Locale.ROOT,
+          "CompactionResult{removed=%d, added=%d, snapshotsExpired=%d}",
+          filesRemoved,
+          filesAdded,
+          snapshotsExpired);
     }
   }
 }
