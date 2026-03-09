@@ -174,6 +174,13 @@ class IcebergWriterFactory {
         }
       } catch (AlreadyExistsException ex) {
         // Race condition — another task created it between exists check and create
+      } catch (ForbiddenException ex) {
+        LOG.warn(
+            "Insufficient permissions to create namespace {}. "
+                + "If the namespace already exists, this is safe to ignore. "
+                + "Otherwise, table creation will fail.",
+            namespace,
+            ex);
       } catch (Exception ex) {
         LOG.error("Failed to create namespace {}", namespace, ex);
         throw ex;
