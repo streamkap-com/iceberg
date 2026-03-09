@@ -34,6 +34,7 @@ import org.apache.iceberg.connect.IcebergSinkConfig;
 import org.apache.iceberg.connect.events.TableReference;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.exceptions.ForbiddenException;
+import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.exceptions.NoSuchTableException;
 import org.apache.iceberg.relocated.com.google.common.annotations.VisibleForTesting;
 import org.apache.iceberg.types.Type;
@@ -135,9 +136,49 @@ class IcebergWriterFactory {
                         identifier, schema, partitionSpec, config.autoCreateProps()));
               } catch (AlreadyExistsException e) {
                 result.set(catalog.loadTable(identifier));
+              } catch (NoSuchNamespaceException e) {
+                // Some REST catalogs (e.g. Polaris) reject createTable if the namespace
+                // doesn't exist, even though createNamespaceIfNotExist was already called.
+                // Retry namespace creation with explicit existence check, then rethrow
+                // so the Tasks retry loop attempts createTable again.
+                LOG.warn(
+                    "Namespace {} does not exist when creating table {}, retrying namespace creation",
+                    identifier.namespace(),
+                    identifier,
+                    e);
+                ensureNamespaceExists(catalog, identifier.namespace());
+                throw e;
               }
             });
     return result.get();
+  }
+
+  /**
+   * Ensures a namespace exists by checking existence and creating if missing. This is the safe
+   * fallback for REST catalogs like Polaris that may reject blind create-if-not-exists calls.
+   */
+  @VisibleForTesting
+  static void ensureNamespaceExists(Catalog catalog, Namespace identifierNamespace) {
+    if (!(catalog instanceof SupportsNamespaces)) {
+      return;
+    }
+
+    SupportsNamespaces nsCatalog = (SupportsNamespaces) catalog;
+    String[] levels = identifierNamespace.levels();
+    for (int index = 0; index < levels.length; index++) {
+      Namespace namespace = Namespace.of(Arrays.copyOfRange(levels, 0, index + 1));
+      try {
+        if (!nsCatalog.namespaceExists(namespace)) {
+          LOG.info("Creating namespace {}", namespace);
+          nsCatalog.createNamespace(namespace);
+        }
+      } catch (AlreadyExistsException ex) {
+        // Race condition — another task created it between exists check and create
+      } catch (Exception ex) {
+        LOG.error("Failed to create namespace {}", namespace, ex);
+        throw ex;
+      }
+    }
   }
 
   @VisibleForTesting
@@ -146,14 +187,30 @@ class IcebergWriterFactory {
       return;
     }
 
+    SupportsNamespaces nsCatalog = (SupportsNamespaces) catalog;
     String[] levels = identifierNamespace.levels();
     for (int index = 0; index < levels.length; index++) {
       Namespace namespace = Namespace.of(Arrays.copyOfRange(levels, 0, index + 1));
       try {
-        ((SupportsNamespaces) catalog).createNamespace(namespace);
+        nsCatalog.createNamespace(namespace);
       } catch (AlreadyExistsException | ForbiddenException ex) {
         // Ignoring the error as forcefully creating the namespace even if it exists
         // to avoid double namespaceExists() check.
+      } catch (NoSuchNamespaceException ex) {
+        // Some REST catalogs (e.g. Polaris, Tabular) return 404 when creating a namespace
+        // if the parent namespace doesn't exist. Fall back to checking existence and creating
+        // with explicit parent validation.
+        LOG.warn(
+            "Failed to create namespace {} directly, attempting fallback",
+            namespace,
+            ex);
+        try {
+          if (!nsCatalog.namespaceExists(namespace)) {
+            nsCatalog.createNamespace(namespace);
+          }
+        } catch (Exception fallbackEx) {
+          LOG.warn("Fallback namespace creation also failed for {}", namespace, fallbackEx);
+        }
       }
     }
   }
