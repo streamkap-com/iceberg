@@ -21,15 +21,20 @@ package org.apache.iceberg.connect.data;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import org.apache.iceberg.DataFile;
+import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.ExpireSnapshots;
+import org.apache.iceberg.FileContent;
 import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.RewriteFiles;
+import org.apache.iceberg.Schema;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableProperties;
@@ -200,6 +205,18 @@ public class TableCompactor {
   }
 
   private List<DataFile> rewriteFiles(Table table, List<FileScanTask> fileScanTasks) {
+    // Build equality delete filter so logically-deleted rows are not carried into compacted files
+    Set<List<Object>> deleteKeys = buildEqualityDeleteSet(table, fileScanTasks);
+    List<String> eqFieldNames = getEqualityFieldNames(table, fileScanTasks);
+    boolean hasDeletes = !deleteKeys.isEmpty();
+
+    if (hasDeletes) {
+      LOG.info(
+          "Applying {} equality delete keys during compaction for table {}",
+          deleteKeys.size(),
+          table.name());
+    }
+
     Map<String, String> tableProps = Maps.newHashMap(table.properties());
     String formatStr =
         tableProps.getOrDefault(
@@ -238,12 +255,24 @@ public class TableCompactor {
     }
 
     try {
+      long skippedRecords = 0;
       for (FileScanTask task : fileScanTasks) {
         try (CloseableIterable<Record> records = openFile(table, task)) {
           for (Record record : records) {
+            if (hasDeletes && isDeletedRecord(record, deleteKeys, eqFieldNames)) {
+              skippedRecords++;
+              continue;
+            }
             writer.write(record);
           }
         }
+      }
+
+      if (skippedRecords > 0) {
+        LOG.info(
+            "Filtered out {} logically-deleted records during compaction for table {}",
+            skippedRecords,
+            table.name());
       }
 
       WriteResult result = writer.complete();
@@ -265,6 +294,81 @@ public class TableCompactor {
         LOG.warn("Failed to close writer during compaction", e);
       }
     }
+  }
+
+  /**
+   * Reads all equality delete files associated with the given scan tasks and builds a set of
+   * deleted key tuples. Each key is a list of field values matching the equality field IDs.
+   */
+  private Set<List<Object>> buildEqualityDeleteSet(
+      Table table, List<FileScanTask> fileScanTasks) {
+    Set<List<Object>> deleteKeys = new HashSet<>();
+    Set<String> processedLocations = new HashSet<>();
+
+    for (FileScanTask task : fileScanTasks) {
+      for (DeleteFile deleteFile : task.deletes()) {
+        if (deleteFile.content() != FileContent.EQUALITY_DELETES) {
+          continue;
+        }
+        if (!processedLocations.add(deleteFile.location())) {
+          continue;
+        }
+
+        List<Integer> eqFieldIds = deleteFile.equalityFieldIds();
+        List<String> fieldNames =
+            eqFieldIds.stream()
+                .map(id -> table.schema().findField(id).name())
+                .collect(Collectors.toList());
+
+        Schema eqSchema = table.schema().select(fieldNames);
+
+        InputFile input =
+            table.io().newInputFile(deleteFile.location(), deleteFile.fileSizeInBytes());
+        ReadBuilder<Record, ?> readBuilder =
+            FormatModelRegistry.readBuilder(deleteFile.format(), Record.class, input);
+
+        try (CloseableIterable<Record> records =
+            readBuilder.project(eqSchema).caseSensitive(true).build()) {
+          for (Record record : records) {
+            List<Object> key = new ArrayList<>(fieldNames.size());
+            for (String fieldName : fieldNames) {
+              key.add(record.getField(fieldName));
+            }
+            deleteKeys.add(key);
+          }
+        } catch (IOException e) {
+          throw new UncheckedIOException(
+              "Failed to read equality delete file: " + deleteFile.location(), e);
+        }
+      }
+    }
+
+    return deleteKeys;
+  }
+
+  /**
+   * Extracts the equality field names from the first equality delete file found in the scan tasks.
+   */
+  private List<String> getEqualityFieldNames(Table table, List<FileScanTask> fileScanTasks) {
+    for (FileScanTask task : fileScanTasks) {
+      for (DeleteFile deleteFile : task.deletes()) {
+        if (deleteFile.content() == FileContent.EQUALITY_DELETES) {
+          return deleteFile.equalityFieldIds().stream()
+              .map(id -> table.schema().findField(id).name())
+              .collect(Collectors.toList());
+        }
+      }
+    }
+    return List.of();
+  }
+
+  private boolean isDeletedRecord(
+      Record record, Set<List<Object>> deleteKeys, List<String> eqFieldNames) {
+    List<Object> key = new ArrayList<>(eqFieldNames.size());
+    for (String fieldName : eqFieldNames) {
+      key.add(record.getField(fieldName));
+    }
+    return deleteKeys.contains(key);
   }
 
   /**
