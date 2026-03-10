@@ -173,7 +173,15 @@ public class TableCompactor {
 
     int expiredSnapshots = 0;
     if (expireAfterCompaction) {
-      expiredSnapshots = expireSnapshots(table);
+      try {
+        expiredSnapshots = expireSnapshots(table);
+      } catch (Exception e) {
+        LOG.warn(
+            "Snapshot expiration failed for table {} (compaction itself succeeded). "
+                + "Old snapshots will be retried on next compaction cycle.",
+            table.name(),
+            e);
+      }
     }
 
     return new CompactionResult(filesToDelete.size(), filesToAdd.size(), expiredSnapshots);
