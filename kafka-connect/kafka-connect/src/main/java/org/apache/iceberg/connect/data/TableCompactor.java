@@ -205,18 +205,6 @@ public class TableCompactor {
   }
 
   private List<DataFile> rewriteFiles(Table table, List<FileScanTask> fileScanTasks) {
-    // Build equality delete filter so logically-deleted rows are not carried into compacted files
-    Set<List<Object>> deleteKeys = buildEqualityDeleteSet(table, fileScanTasks);
-    List<String> eqFieldNames = getEqualityFieldNames(table, fileScanTasks);
-    boolean hasDeletes = !deleteKeys.isEmpty();
-
-    if (hasDeletes) {
-      LOG.info(
-          "Applying {} equality delete keys during compaction for table {}",
-          deleteKeys.size(),
-          table.name());
-    }
-
     Map<String, String> tableProps = Maps.newHashMap(table.properties());
     String formatStr =
         tableProps.getOrDefault(
@@ -257,9 +245,20 @@ public class TableCompactor {
     try {
       long skippedRecords = 0;
       for (FileScanTask task : fileScanTasks) {
+        // Build delete set per-task: task.deletes() returns only the delete files
+        // applicable to this specific data file (based on sequence number).
+        // This ensures we don't filter out records from newer data files
+        // that were written alongside or after the equality delete file.
+        Set<List<Object>> taskDeleteKeys =
+            buildEqualityDeleteSet(table, List.of(task));
+        List<String> taskEqFieldNames =
+            getEqualityFieldNames(table, List.of(task));
+        boolean taskHasDeletes = !taskDeleteKeys.isEmpty();
+
         try (CloseableIterable<Record> records = openFile(table, task)) {
           for (Record record : records) {
-            if (hasDeletes && isDeletedRecord(record, deleteKeys, eqFieldNames)) {
+            if (taskHasDeletes
+                && isDeletedRecord(record, taskDeleteKeys, taskEqFieldNames)) {
               skippedRecords++;
               continue;
             }
