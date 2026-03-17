@@ -112,6 +112,27 @@ public class IcebergSinkConfig extends AbstractConfig {
   public static final int SCHEMA_UPDATE_RETRIES = 2; // 3 total attempts
   public static final int CREATE_TABLE_RETRIES = 2; // 3 total attempts
 
+  private static final String TABLES_COMPACTION_ENABLED_PROP =
+      "iceberg.tables.compaction.enabled";
+  private static final String TABLES_COMPACTION_TARGET_FILE_SIZE_BYTES_PROP =
+      "iceberg.tables.compaction.target-file-size-bytes";
+  private static final long TABLES_COMPACTION_TARGET_FILE_SIZE_BYTES_DEFAULT =
+      128L * 1024 * 1024; // 128 MB
+  private static final String TABLES_COMPACTION_MIN_SMALL_FILES_PROP =
+      "iceberg.tables.compaction.min-small-files";
+  private static final int TABLES_COMPACTION_MIN_SMALL_FILES_DEFAULT = 5;
+  private static final String TABLES_COMPACTION_MAX_FILES_PER_RUN_PROP =
+      "iceberg.tables.compaction.max-files-per-run";
+  private static final int TABLES_COMPACTION_MAX_FILES_PER_RUN_DEFAULT = 100;
+  private static final String TABLES_COMPACTION_COMMIT_THRESHOLD_PROP =
+      "iceberg.tables.compaction.commit-threshold";
+  private static final int TABLES_COMPACTION_COMMIT_THRESHOLD_DEFAULT = 5;
+  private static final String TABLES_COMPACTION_EXPIRE_SNAPSHOTS_PROP =
+      "iceberg.tables.compaction.expire-snapshots";
+  private static final String TABLES_COMPACTION_RETAIN_LAST_PROP =
+      "iceberg.tables.compaction.retain-last";
+  private static final int TABLES_COMPACTION_RETAIN_LAST_DEFAULT = 1;
+
   private static final String COORDINATOR_EXECUTOR_KEEP_ALIVE_TIMEOUT_MS =
       "iceberg.coordinator-executor-keep-alive-timeout-ms";
 
@@ -281,6 +302,48 @@ public class IcebergSinkConfig extends AbstractConfig {
         120000L,
         Importance.LOW,
         "config to control coordinator executor keep alive time");
+    configDef.define(
+        TABLES_COMPACTION_ENABLED_PROP,
+        ConfigDef.Type.BOOLEAN,
+        false,
+        Importance.MEDIUM,
+        "Set to true to enable lightweight compaction of small data files after commits");
+    configDef.define(
+        TABLES_COMPACTION_TARGET_FILE_SIZE_BYTES_PROP,
+        ConfigDef.Type.LONG,
+        TABLES_COMPACTION_TARGET_FILE_SIZE_BYTES_DEFAULT,
+        Importance.MEDIUM,
+        "Target file size in bytes for compaction. Files smaller than this are candidates for merging.");
+    configDef.define(
+        TABLES_COMPACTION_MIN_SMALL_FILES_PROP,
+        ConfigDef.Type.INT,
+        TABLES_COMPACTION_MIN_SMALL_FILES_DEFAULT,
+        Importance.LOW,
+        "Minimum number of small files required before triggering compaction");
+    configDef.define(
+        TABLES_COMPACTION_MAX_FILES_PER_RUN_PROP,
+        ConfigDef.Type.INT,
+        TABLES_COMPACTION_MAX_FILES_PER_RUN_DEFAULT,
+        Importance.LOW,
+        "Maximum number of small files to compact in a single run");
+    configDef.define(
+        TABLES_COMPACTION_COMMIT_THRESHOLD_PROP,
+        ConfigDef.Type.INT,
+        TABLES_COMPACTION_COMMIT_THRESHOLD_DEFAULT,
+        Importance.LOW,
+        "Number of Iceberg commits between compaction checks");
+    configDef.define(
+        TABLES_COMPACTION_EXPIRE_SNAPSHOTS_PROP,
+        ConfigDef.Type.BOOLEAN,
+        false,
+        Importance.MEDIUM,
+        "Set to true to expire old snapshots and delete unreferenced data files after compaction");
+    configDef.define(
+        TABLES_COMPACTION_RETAIN_LAST_PROP,
+        ConfigDef.Type.INT,
+        TABLES_COMPACTION_RETAIN_LAST_DEFAULT,
+        Importance.MEDIUM,
+        "Number of most recent snapshots to retain when expiring snapshots after compaction");
     return configDef;
   }
 
@@ -522,6 +585,34 @@ public class IcebergSinkConfig extends AbstractConfig {
 
   public boolean schemaCaseInsensitive() {
     return getBoolean(TABLES_SCHEMA_CASE_INSENSITIVE_PROP);
+  }
+
+  public boolean compactionEnabled() {
+    return getBoolean(TABLES_COMPACTION_ENABLED_PROP);
+  }
+
+  public long compactionTargetFileSizeBytes() {
+    return getLong(TABLES_COMPACTION_TARGET_FILE_SIZE_BYTES_PROP);
+  }
+
+  public int compactionMinSmallFiles() {
+    return getInt(TABLES_COMPACTION_MIN_SMALL_FILES_PROP);
+  }
+
+  public int compactionMaxFilesPerRun() {
+    return getInt(TABLES_COMPACTION_MAX_FILES_PER_RUN_PROP);
+  }
+
+  public int compactionCommitThreshold() {
+    return getInt(TABLES_COMPACTION_COMMIT_THRESHOLD_PROP);
+  }
+
+  public boolean compactionExpireSnapshots() {
+    return getBoolean(TABLES_COMPACTION_EXPIRE_SNAPSHOTS_PROP);
+  }
+
+  public int compactionRetainLast() {
+    return getInt(TABLES_COMPACTION_RETAIN_LAST_PROP);
   }
 
   public JsonConverter jsonConverter() {
