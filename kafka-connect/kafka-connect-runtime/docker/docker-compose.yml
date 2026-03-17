@@ -106,3 +106,14 @@ services:
       CONNECT_PLUGIN_PATH: /test/kafka-connect
       CONNECT_BOOTSTRAP_SERVERS: kafka:9092
       CONNECT_OFFSET_FLUSH_INTERVAL_MS: 500
+
+  notebook:
+    image: iceberg-notebook
+    depends_on:
+      - iceberg
+      - minio
+    hostname: notebook
+    ports:
+      - 8888:8888
+    environment:
+      - JUPYTER_TOKEN=iceberg
